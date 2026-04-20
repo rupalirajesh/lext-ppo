@@ -1,7 +1,7 @@
 import pandas as pd
 from transformers import pipeline
 from groq import Groq
-from langchain_ollama import OllamaLLM
+# from langchain_ollama import OllamaLLM
 import json
 import re
 
