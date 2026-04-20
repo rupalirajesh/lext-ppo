@@ -3,7 +3,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 
-from src.metrics.trustworthiness import lext
+from metrics.trustworthiness import lext
 from transformers import pipeline
 
 import sys
