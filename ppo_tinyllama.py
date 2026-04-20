@@ -11,11 +11,11 @@ from metrics.trustworthiness import lext
 # =========================
 # Config
 # =========================
-MODEL_NAME  = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-MAX_SAMPLES = 500
-BATCH_SIZE  = 4
-MAX_PROMPT_TOKENS    = 512
-MAX_NEW_TOKENS       = 150
+MODEL_NAME        = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+MAX_SAMPLES       = 500
+BATCH_SIZE        = 4
+MAX_PROMPT_TOKENS = 512
+MAX_NEW_TOKENS    = 150
 
 # =========================
 # Tokenizer
@@ -81,8 +81,8 @@ def build_prompt(context: str, question: str) -> str:
 
 
 def safe_1d(t: torch.Tensor, name: str = "tensor") -> torch.Tensor:
-    """Guarantee a 1-D tensor; raise early with a clear message if impossible."""
-    t = t.flatten()
+    """Guarantee a 1-D cpu-safe tensor; raise early with a clear message."""
+    t = t.detach().flatten()
     if t.dim() != 1 or t.numel() == 0:
         raise ValueError(f"{name} has bad shape after flatten: {t.shape}")
     return t
@@ -93,14 +93,11 @@ def parse_response(text: str):
     explanation = text
 
     if "Answer:" in text:
-        label = text.split("Answer:")[-1].split("\n")[0].strip().lower()
-        # Normalise to Yes/No
-        if "yes" in label:
+        raw = text.split("Answer:")[-1].split("\n")[0].strip().lower()
+        if "yes" in raw:
             label = "Yes"
-        elif "no" in label:
+        elif "no" in raw:
             label = "No"
-        else:
-            label = "unknown"
 
     if "Reasoning:" in text:
         explanation = text.split("Reasoning:")[-1].strip()
@@ -109,20 +106,17 @@ def parse_response(text: str):
 
 
 # =========================
-# Training loop
+# Rollout buffers
 # =========================
-print("Starting PPO training…")
-
 query_tensors    = []
 response_tensors = []
 rewards_list     = []
 
 
 def flush_ppo_step(step_idx: int):
-    """Run one PPO update and clear the rollout buffers."""
-    # TRL expects rewards as a list of 0-d float32 tensors
     reward_tensors = [
-        torch.tensor(r, dtype=torch.float32) for r in rewards_list
+        torch.tensor(r, dtype=torch.float32)
+        for r in rewards_list
     ]
     ppo_trainer.step(query_tensors, response_tensors, reward_tensors)
     print(f"  🔁 PPO update at step {step_idx} "
@@ -132,9 +126,13 @@ def flush_ppo_step(step_idx: int):
     rewards_list.clear()
 
 
+# =========================
+# Training loop
+# =========================
+print("Starting PPO training…")
+
 for i, sample in enumerate(dataset):
     try:
-        # Skip ambiguous labels
         decision = sample["final_decision"].strip().lower()
         if decision == "maybe":
             continue
@@ -142,30 +140,30 @@ for i, sample in enumerate(dataset):
         question = sample["question"]
         context  = " ".join(sample["context"]["contexts"])
         context  = context[:800].replace("\n", " ")
+        prompt   = build_prompt(context, question)
 
-        prompt = build_prompt(context, question)
-
-        # ── Tokenise (truncate to MAX_PROMPT_TOKENS) ──────────────────────
+        # ── Tokenise ──────────────────────────────────────────────────────
         enc = tokenizer(
             prompt,
             return_tensors="pt",
             truncation=True,
             max_length=MAX_PROMPT_TOKENS,
         )
-        # enc.input_ids shape: (1, seq_len)
+        # safe_1d gives us a guaranteed 1-D tensor
         query_tensor = safe_1d(enc.input_ids[0].to(device), "query_tensor")
 
         # ── Generate ──────────────────────────────────────────────────────
+        # TRL 0.7.x requires a LIST of 1-D tensors, NOT a batched 2-D tensor
         with torch.no_grad():
             gen_ids = ppo_trainer.generate(
-                query_tensor.unsqueeze(0),   # (1, seq_len)
+                [query_tensor],                      # ← key fix: list of 1-D
                 max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=True,
                 temperature=0.7,
                 pad_token_id=tokenizer.eos_token_id,
             )
-        # gen_ids: (1, seq_len + new_tokens)
-        full_ids = gen_ids[0]                         # (seq_len + new_tokens,)
+
+        full_ids         = safe_1d(gen_ids[0], "full_ids")
         generated_tokens = safe_1d(
             full_ids[query_tensor.shape[0]:], "generated_tokens"
         )
@@ -178,7 +176,7 @@ for i, sample in enumerate(dataset):
         label, explanation = parse_response(response_text)
 
         # ── Reward ────────────────────────────────────────────────────────
-        reward = lext(
+        reward = float(lext(
             context,
             question,
             sample["long_answer"],
@@ -190,23 +188,21 @@ for i, sample in enumerate(dataset):
                 "predicted_label":       label,
                 "predicted_explanation": explanation,
             },
-        )
-        reward = float(reward)
+        ))
 
-        # ── Accumulate rollout ────────────────────────────────────────────
+        # ── Accumulate ────────────────────────────────────────────────────
         query_tensors.append(query_tensor)
         response_tensors.append(generated_tokens)
         rewards_list.append(reward)
 
         print(f"Step {i:>3} | label={label:<8} | reward={reward:.4f}")
 
-        # ── PPO step when buffer is full ──────────────────────────────────
+        # ── PPO step ──────────────────────────────────────────────────────
         if len(query_tensors) >= BATCH_SIZE:
             flush_ppo_step(i)
 
     except Exception as e:
         print(f"⚠️  Error at step {i}: {e}")
-        # Don't let a bad sample corrupt the buffer
         continue
 
 # Final partial batch
