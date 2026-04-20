@@ -6,6 +6,9 @@ from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from src.metrics.trustworthiness import lext
 from transformers import pipeline
 
+import sys
+sys.path.append("/content/lext-ppo")
+
 # =========================
 # Config
 # =========================
