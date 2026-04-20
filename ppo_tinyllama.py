@@ -7,24 +7,23 @@ from metrics.trustworthiness import lext
 from transformers import pipeline
 
 import sys
+import os
 sys.path.append("/content/lext-ppo")
 
 # =========================
 # Config
 # =========================
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-SAVE_PATH = "data/tinyllama/tinyllama_pubmedqa_lext.csv"
-MAX_SAMPLES = 500  # half-ish subset for Colab
+MAX_SAMPLES = 500
+BATCH_SIZE = 4
 
 # =========================
-# Load Model (QLoRA style)
+# Load Model
 # =========================
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def load_model():
-    base_model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME
-    )
+    base_model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLMWithValueHead.from_pretrained(base_model)
     return model
 
@@ -35,7 +34,7 @@ model = load_model()
 # =========================
 config = PPOConfig(
     learning_rate=1e-6,
-    batch_size=1,
+    batch_size=BATCH_SIZE,
     mini_batch_size=1,
     gradient_accumulation_steps=1,
     ppo_epochs=1,
@@ -47,6 +46,8 @@ ppo_trainer = PPOTrainer(
     model=model,
     tokenizer=tokenizer
 )
+
+device = ppo_trainer.accelerator.device
 
 # =========================
 # Dataset
@@ -86,8 +87,6 @@ Confidence: low/medium/high
 # =========================
 print("Starting PPO training...")
 
-BATCH_SIZE = 4  # start small (Colab safe)
-
 query_tensors = []
 response_tensors = []
 rewards = []
@@ -99,23 +98,34 @@ for i, sample in enumerate(dataset):
 
         question = sample["question"]
         context = " ".join(sample["context"]["contexts"])
-
         context = context[:800].replace("\n", " ")
 
         prompt = build_prompt(context, question)
 
-        query_tensor = tokenizer(prompt, return_tensors="pt").input_ids.to(ppo_trainer.accelerator.device)
+        # =========================
+        # Tokenize (correct shape)
+        # =========================
+        query_tensor = tokenizer(prompt, return_tensors="pt").input_ids[0].to(device)
 
+        # =========================
+        # Generate response
+        # =========================
         response_tensor = ppo_trainer.generate(
-            query_tensor,
+            query_tensor.unsqueeze(0),
             max_new_tokens=150,
             do_sample=True,
             temperature=0.7
-        )
+        )[0]  # remove batch dim
 
-        response_text = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+        # =========================
+        # Extract ONLY generated tokens
+        # =========================
+        generated_tokens = response_tensor[len(query_tensor):]
+        response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-        # Extract parts (simple parsing)
+        # =========================
+        # Parse output
+        # =========================
         label = "unknown"
         explanation = response_text
 
@@ -125,17 +135,16 @@ for i, sample in enumerate(dataset):
         if "Reasoning:" in response_text:
             explanation = response_text.split("Reasoning:")[-1].strip()
 
-
-        groq_api = ""
-
-        # Compute LEXT reward
+        # =========================
+        # Compute reward (LEXT)
+        # =========================
         reward = lext(
             context,
             question,
             sample["long_answer"],
             sample["final_decision"].capitalize(),
-            model,  # no external model
-            groq_api,
+            model,
+            "",  # groq_api handled internally
             ner_pipe,
             {
                 "predicted_label": label,
@@ -143,18 +152,20 @@ for i, sample in enumerate(dataset):
             }
         )
 
-        reward_tensor = torch.tensor([reward]).to(ppo_trainer.accelerator.device)
-
+        # =========================
         # Store rollout
-        query_tensors.append(query_tensor[0])
-        response_tensors.append(response_tensor[0])
-        rewards.append(reward)
+        # =========================
+        query_tensors.append(query_tensor)
+        response_tensors.append(response_tensor)
+        rewards.append(float(reward))
 
-        print(f"Step {i} | Reward: {reward}")
+        print(f"Step {i} | Reward: {reward:.4f}")
 
-        # Run PPO update every BATCH_SIZE samples
+        # =========================
+        # PPO update
+        # =========================
         if len(query_tensors) >= BATCH_SIZE:
-            reward_tensors = torch.tensor(rewards).to(ppo_trainer.accelerator.device)
+            reward_tensors = torch.tensor(rewards).to(device)
 
             stats = ppo_trainer.step(
                 query_tensors,
@@ -164,7 +175,6 @@ for i, sample in enumerate(dataset):
 
             print(f"🔁 PPO update at step {i} | Mean reward: {sum(rewards)/len(rewards):.4f}")
 
-            # Clear buffers
             query_tensors = []
             response_tensors = []
             rewards = []
@@ -172,8 +182,11 @@ for i, sample in enumerate(dataset):
     except Exception as e:
         print(f"Error at step {i}: {e}")
 
+# =========================
+# Final PPO update
+# =========================
 if len(query_tensors) > 0:
-    reward_tensors = torch.tensor(rewards).to(ppo_trainer.accelerator.device)
+    reward_tensors = torch.tensor(rewards).to(device)
 
     ppo_trainer.step(
         query_tensors,
