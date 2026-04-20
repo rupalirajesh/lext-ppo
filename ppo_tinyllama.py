@@ -3,12 +3,11 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 
-from metrics.trustworthiness import lext
 from transformers import pipeline
-
 import sys
-import os
 sys.path.append("/content/lext-ppo")
+
+from metrics.trustworthiness import lext
 
 # =========================
 # Config
@@ -21,6 +20,7 @@ BATCH_SIZE = 4
 # Load Model
 # =========================
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+tokenizer.pad_token = tokenizer.eos_token  # important
 
 def load_model():
     base_model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
@@ -48,6 +48,7 @@ ppo_trainer = PPOTrainer(
 )
 
 device = ppo_trainer.accelerator.device
+model.to(device)
 
 # =========================
 # Dataset
@@ -61,7 +62,8 @@ dataset = dataset.select(range(MAX_SAMPLES))
 ner_pipe = pipeline(
     "token-classification",
     model="Clinical-AI-Apollo/Medical-NER",
-    aggregation_strategy='simple'
+    aggregation_strategy='simple',
+    device=0 if torch.cuda.is_available() else -1
 )
 
 # =========================
@@ -103,24 +105,27 @@ for i, sample in enumerate(dataset):
         prompt = build_prompt(context, question)
 
         # =========================
-        # Tokenize (correct shape)
+        # Tokenize
         # =========================
         query_tensor = tokenizer(prompt, return_tensors="pt").input_ids[0].to(device)
+        query_tensor = query_tensor.squeeze()
 
         # =========================
-        # Generate response
+        # Generate
         # =========================
         response_tensor = ppo_trainer.generate(
             query_tensor.unsqueeze(0),
             max_new_tokens=150,
             do_sample=True,
             temperature=0.7
-        )[0]  # remove batch dim
+        )[0]
 
         # =========================
-        # Extract ONLY generated tokens
+        # Extract generated tokens ONLY
         # =========================
         generated_tokens = response_tensor[len(query_tensor):]
+        generated_tokens = generated_tokens.squeeze()
+
         response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
         # =========================
@@ -136,7 +141,7 @@ for i, sample in enumerate(dataset):
             explanation = response_text.split("Reasoning:")[-1].strip()
 
         # =========================
-        # Compute reward (LEXT)
+        # Reward
         # =========================
         reward = lext(
             context,
@@ -144,7 +149,7 @@ for i, sample in enumerate(dataset):
             sample["long_answer"],
             sample["final_decision"].capitalize(),
             model,
-            "",  # groq_api handled internally
+            "",
             ner_pipe,
             {
                 "predicted_label": label,
@@ -156,44 +161,35 @@ for i, sample in enumerate(dataset):
         # Store rollout
         # =========================
         query_tensors.append(query_tensor)
-        response_tensors.append(response_tensor)
+        response_tensors.append(generated_tokens)  # FIXED
         rewards.append(float(reward))
 
         print(f"Step {i} | Reward: {reward:.4f}")
 
         # =========================
-        # PPO update
+        # PPO step
         # =========================
         if len(query_tensors) >= BATCH_SIZE:
             reward_tensors = torch.tensor(rewards).to(device)
 
-            stats = ppo_trainer.step(
+            ppo_trainer.step(
                 query_tensors,
                 response_tensors,
                 reward_tensors
             )
 
-            print(f"🔁 PPO update at step {i} | Mean reward: {sum(rewards)/len(rewards):.4f}")
+            print(f"🔁 PPO update at step {i}")
 
-            query_tensors = []
-            response_tensors = []
-            rewards = []
+            query_tensors, response_tensors, rewards = [], [], []
 
     except Exception as e:
         print(f"Error at step {i}: {e}")
 
 # =========================
-# Final PPO update
+# Final step
 # =========================
 if len(query_tensors) > 0:
     reward_tensors = torch.tensor(rewards).to(device)
-
-    ppo_trainer.step(
-        query_tensors,
-        response_tensors,
-        reward_tensors
-    )
-
-    print("Final PPO update done.")
+    ppo_trainer.step(query_tensors, response_tensors, reward_tensors)
 
 print("Training complete.")
