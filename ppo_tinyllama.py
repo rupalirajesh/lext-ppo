@@ -8,6 +8,8 @@ import sys
 sys.path.append("/content/lext-ppo")
 sys.path.append("/content/lext-ppo/src")
 
+import basic_functions
+
 # =========================
 # Config
 # =========================
@@ -49,7 +51,6 @@ ppo_trainer = PPOTrainer(
 device = ppo_trainer.accelerator.device
 model.to(device)
 
-import basic_functions
 basic_functions.init_globals(model, tokenizer, device)
 
 # =========================
