@@ -15,6 +15,11 @@ GROQ_KEYS = [k.strip() for k in keys.split(",") if k.strip()]
 if len(GROQ_KEYS) == 0:
     raise ValueError("No GROQ_KEYS found. Set them via environment variables.")
 
+# These will be injected by the PPO training script at runtime
+model = None
+tokenizer = None
+device = None
+
 def init_globals(m, tok, dev):
     global model, tokenizer, device
     model = m
