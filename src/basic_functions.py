@@ -57,22 +57,24 @@ def clean_output(text):
 
     return text.strip()
 
-def call_model(prompt, target_model):
-    llm = OllamaLLM(
-        model=target_model,
-        temperature=0,
-        top_p=1,
-        num_ctx=4096,
-        num_predict=300   # increased
-    )
+def call_model(prompt, target_model=None, max_new_tokens=300):
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+    ).to(device)
 
-    prediction = llm.invoke(prompt)  # ❌ NO stop tokens
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
 
-    # ✅ normalize
-    if isinstance(prediction, list):
-        prediction = " ".join(prediction)
-
-    return str(prediction)
+    generated = outputs[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(generated, skip_special_tokens=True)
 
 def call_llama(prompt, groq_key=None, model="llama-3.1-8b-instant"):
     """
