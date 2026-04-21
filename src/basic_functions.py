@@ -15,6 +15,12 @@ GROQ_KEYS = [k.strip() for k in keys.split(",") if k.strip()]
 if len(GROQ_KEYS) == 0:
     raise ValueError("No GROQ_KEYS found. Set them via environment variables.")
 
+def init_globals(m, tok, dev):
+    global model, tokenizer, device
+    model = m
+    tokenizer = tok
+    device = dev
+
 class GroqKeyManager:
     def __init__(self, keys, switch_every=1000):
         self.keys = keys
