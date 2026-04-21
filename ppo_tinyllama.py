@@ -8,8 +8,6 @@ import sys
 sys.path.append("/content/lext-ppo")
 sys.path.append("/content/lext-ppo/src")
 
-from metrics.trustworthiness import lext
-
 # =========================
 # Config
 # =========================
@@ -130,6 +128,7 @@ def flush_ppo_step(step_idx: int):
     response_tensors.clear()
     rewards_list.clear()
 
+from metrics.trustworthiness import lext
 
 # =========================
 # Training loop
