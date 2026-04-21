@@ -69,6 +69,10 @@ def clean_output(text):
     return text.strip()
 
 def call_model(prompt, target_model=None, max_new_tokens=300):
+    if tokenizer is None or model is None or device is None:
+        raise RuntimeError("call_model called before init_globals(). Call basic_functions.init_globals(model, tokenizer, device) first.")
+    
+    import torch
     inputs = tokenizer(
         prompt,
         return_tensors="pt",
