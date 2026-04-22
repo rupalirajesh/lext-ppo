@@ -215,3 +215,10 @@ if query_tensors:
     flush_ppo_step(i)
 
 print("✅ Training complete.")
+
+# Save the final trained model
+save_path = "/content/drive/MyDrive/tinyllama_ppo_finetuned"
+
+ppo_trainer.model.save_pretrained(save_path)
+tokenizer.save_pretrained(save_path)
+print(f"✅ Model saved to {save_path}")
