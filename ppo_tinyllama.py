@@ -74,14 +74,20 @@ ner_pipe = pipeline(
 # Helpers
 # =========================
 def build_prompt(context: str, question: str) -> str:
-    return (
-        "You are a medical assistant.\n\n"
-        f"Context: {context}\n\n"
-        f"Question: {question}\n\n"
-        "Respond EXACTLY in this format:\n\n"
-        "Answer: Yes or No\n"
-        "Reasoning: step-by-step reasoning\n"
-        "Confidence: low/medium/high\n"
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a medical assistant. Always respond in exactly this format:\nAnswer: Yes or No\nReasoning: your reasoning here\nConfidence: low/medium/high"
+        },
+        {
+            "role": "user", 
+            "content": f"Context: {context}\n\nQuestion: {question}"
+        }
+    ]
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
     )
 
 
