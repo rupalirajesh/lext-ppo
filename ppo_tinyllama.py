@@ -4,6 +4,7 @@ from datasets import load_dataset
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from transformers import pipeline
 import sys
+import re
 
 sys.path.append("/content/lext-ppo")
 sys.path.append("/content/lext-ppo/src")
@@ -96,15 +97,25 @@ def parse_response(text: str):
     label       = "unknown"
     explanation = text
 
-    if "Answer:" in text:
-        raw = text.split("Answer:")[-1].split("\n")[0].strip().lower()
-        if "yes" in raw:
-            label = "Yes"
-        elif "no" in raw:
-            label = "No"
+    # Try strict format first: "Answer: Yes/No"
+    match = re.search(r"Answer:\s*(Yes|No)", text, re.IGNORECASE)
+    if match:
+        label = match.group(1).capitalize()
+    else:
+        # Fallback: "Respond: Yes/No"
+        match = re.search(r"Respond:\s*(Yes|No)", text, re.IGNORECASE)
+        if match:
+            label = match.group(1).capitalize()
+        else:
+            # Last resort: any standalone Yes/No in the text
+            match = re.search(r"\b(Yes|No)\b", text, re.IGNORECASE)
+            if match:
+                label = match.group(1).capitalize()
 
     if "Reasoning:" in text:
         explanation = text.split("Reasoning:")[-1].strip()
+    elif "Respond:" in text:
+        explanation = text.split("Respond:")[-1].strip()
 
     return label, explanation
 
@@ -154,14 +165,12 @@ for i, sample in enumerate(dataset):
             truncation=True,
             max_length=MAX_PROMPT_TOKENS,
         )
-        # safe_1d gives us a guaranteed 1-D tensor
         query_tensor = safe_1d(enc.input_ids[0].to(device), "query_tensor")
 
         # ── Generate ──────────────────────────────────────────────────────
-        # TRL 0.7.x requires a LIST of 1-D tensors, NOT a batched 2-D tensor
         with torch.no_grad():
             gen_ids = ppo_trainer.generate(
-                [query_tensor],                      # ← key fix: list of 1-D
+                [query_tensor],
                 max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=True,
                 temperature=1.0,
@@ -195,6 +204,14 @@ for i, sample in enumerate(dataset):
             },
         ))
 
+        # ── Reward shaping ────────────────────────────────────────────────
+        if label == "unknown":
+            reward = -0.5   # penalize failure to produce a label
+        elif len(response_text.strip()) < 20:
+            reward = -1.0   # penalize empty/near-empty responses
+        elif reward == 0.0:
+            reward = 0.1    # small positive signal for valid but low-scoring responses
+
         # ── Accumulate ────────────────────────────────────────────────────
         query_tensors.append(query_tensor)
         response_tensors.append(generated_tokens)
@@ -211,14 +228,18 @@ for i, sample in enumerate(dataset):
         continue
 
 # Final partial batch
-if query_tensors:
+if len(query_tensors) >= BATCH_SIZE:
     flush_ppo_step(i)
+else:
+    print(f"⚠️  Skipping final {len(query_tensors)} samples (not enough for a full batch)")
 
 print("✅ Training complete.")
 
 # Save the final trained model
-save_path = "/content/drive/MyDrive/tinyllama_ppo_finetuned"
+from google.colab import drive
+drive.mount('/content/drive')
 
+save_path = "/content/drive/MyDrive/tinyllama_ppo_finetuned"
 ppo_trainer.model.save_pretrained(save_path)
 tokenizer.save_pretrained(save_path)
 print(f"✅ Model saved to {save_path}")
