@@ -108,7 +108,14 @@ def build_prompt(context: str, question: str) -> str:
 
 
 def parse_response(text: str) -> tuple[str, str]:
-    """Extract label and reasoning from the model's raw output."""
+    """
+    Extract label and reasoning from the model's raw output.
+
+    Falls back gracefully so we always return something usable:
+    - Label:      looks for yes/no anywhere in the text if the structured
+                  'Answer:' line is missing
+    - Explanation: uses the full response text if no 'Reasoning:' line found
+    """
     label, explanation = "unknown", text.strip()
 
     for line in text.splitlines():
@@ -121,6 +128,18 @@ def parse_response(text: str) -> tuple[str, str]:
                 label = "No"
         elif line.lower().startswith("reasoning:"):
             explanation = line.split(":", 1)[-1].strip()
+
+    # Fallback: if label still unknown, scan the whole text for yes/no
+    if label == "unknown":
+        lower = text.lower()
+        if "yes" in lower:
+            label = "Yes"
+        elif "no" in lower:
+            label = "No"
+
+    # Fallback: if explanation is empty, use the whole response
+    if not explanation.strip():
+        explanation = text.strip()
 
     return label, explanation
 
@@ -205,25 +224,22 @@ for step, sample in enumerate(dataset):
         label, explanation = parse_response(response_text)
 
         # ── Compute reward ────────────────────────────────────────────────
-        if label == "unknown" or not explanation.strip():
-            # Don't add garbage rollouts to the batch — skip and move on.
-            # Adding them with a penalty reward still trains on a bad rollout
-            # and pollutes the batch size count.
-            print(f"Step {step:>3} | ⚠ degenerate output — skipping")
+        if not response_text.strip():
+            # Truly empty output — nothing to work with, skip
+            print(f"Step {step:>3} | ⚠ empty output — skipping")
             continue
-        else:
-            lext_score = lext_module.lext(
-                ground_context=context,
-                ground_question=question,
-                ground_explanation=sample["long_answer"],
-                ground_label=sample["final_decision"].capitalize(),
-                predicted_label=label,
-                predicted_explanation=explanation,
-                ner_pipe=ner_pipe,
-            )
-            # Re-centre reward so the model gets signed feedback
-            reward = float(lext_score) - REWARD_CENTRE
-            print(f"Step {step:>3} | label={label} | lext={lext_score:.4f} | reward={reward:.4f}")
+        lext_score = lext_module.lext(
+            ground_context=context,
+            ground_question=question,
+            ground_explanation=sample["long_answer"],
+            ground_label=sample["final_decision"].capitalize(),
+            predicted_label=label,
+            predicted_explanation=explanation,
+            ner_pipe=ner_pipe,
+        )
+        # Re-centre reward so the model gets signed feedback
+        reward = float(lext_score) - REWARD_CENTRE
+        print(f"Step {step:>3} | label={label} | lext={lext_score:.4f} | reward={reward:.4f}")
 
         # ── Accumulate into batch ─────────────────────────────────────────
         query_tensors.append(query_tensor)
