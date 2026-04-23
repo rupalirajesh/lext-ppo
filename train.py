@@ -44,7 +44,6 @@ MAX_NEW_TOKENS    = 150
 LEARNING_RATE     = 1e-6
 KL_COEF           = 0.2    # KL penalty strength — prevents reward hacking
 REWARD_CENTRE     = 0.5    # shifts [0,1] rewards to [-0.5, 0.5]
-PENALTY           = -0.5   # reward for degenerate (empty/unknown) outputs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,14 +143,21 @@ rewards_list     = []
 
 
 def flush_batch(step: int):
-    """Run one PPO update on the accumulated batch, then clear the buffers."""
-    reward_tensors = [torch.tensor(r, dtype=torch.float32) for r in rewards_list]
-    ppo_trainer.step(query_tensors, response_tensors, reward_tensors)
-    mean_r = sum(rewards_list) / len(rewards_list)
-    print(f"  → PPO update at step {step} | mean reward {mean_r:.4f}\n")
-    query_tensors.clear()
-    response_tensors.clear()
-    rewards_list.clear()
+    """Run one PPO update on the accumulated batch, then clear the buffers.
+    Buffers are always cleared — even if the PPO step itself fails — so a
+    bad batch can never block all future updates.
+    """
+    try:
+        reward_tensors = [torch.tensor(r, dtype=torch.float32) for r in rewards_list]
+        ppo_trainer.step(query_tensors, response_tensors, reward_tensors)
+        mean_r = sum(rewards_list) / len(rewards_list)
+        print(f"  → PPO update at step {step} | mean reward {mean_r:.4f}\n")
+    except Exception as e:
+        print(f"  ⚠ PPO step failed at step {step}: {e} — skipping batch\n")
+    finally:
+        query_tensors.clear()
+        response_tensors.clear()
+        rewards_list.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,9 +206,11 @@ for step, sample in enumerate(dataset):
 
         # ── Compute reward ────────────────────────────────────────────────
         if label == "unknown" or not explanation.strip():
-            # Penalise immediately — don't waste metric calls on garbage output
-            reward = PENALTY
-            print(f"Step {step:>3} | ⚠ degenerate output | reward={reward:.4f}")
+            # Don't add garbage rollouts to the batch — skip and move on.
+            # Adding them with a penalty reward still trains on a bad rollout
+            # and pollutes the batch size count.
+            print(f"Step {step:>3} | ⚠ degenerate output — skipping")
+            continue
         else:
             lext_score = lext_module.lext(
                 ground_context=context,
