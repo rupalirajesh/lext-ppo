@@ -164,7 +164,7 @@ for i, sample in enumerate(dataset):
                 [query_tensor],                      # ← key fix: list of 1-D
                 max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=True,
-                temperature=0.7,
+                temperature=1.0,
                 pad_token_id=tokenizer.eos_token_id,
             )
 
