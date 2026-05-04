@@ -163,6 +163,7 @@ def safe_1d(tensor: torch.Tensor, name: str = "") -> torch.Tensor:
 query_tensors    = []
 response_tensors = []
 rewards_list     = []
+metrics_log = []
 
 
 def flush_batch(step: int):
@@ -242,6 +243,12 @@ for step, sample in enumerate(dataset):
             predicted_explanation=explanation,
             ner_pipe=ner_pipe,
         )
+        metrics_log.append({
+            "step":         step,
+            "plausibility": lext_module._last_plausibility,
+            "faithfulness": lext_module._last_faithfulness,
+            "explanation":  explanation,
+        })
         # Re-centre reward so the model gets signed feedback
         reward = float(lext_score) - REWARD_CENTRE
         print(f"Step {step:>3} | label={label} | lext={lext_score:.4f} | reward={reward:.4f}")
@@ -268,6 +275,10 @@ print("Training complete.\n")
 # ─────────────────────────────────────────────────────────────────────────────
 # Save
 # ─────────────────────────────────────────────────────────────────────────────
+import json
+with open("/content/drive/MyDrive/tinyllama_ppo_finetuned/metrics_log.json", "w") as f:
+    json.dump(metrics_log, f, indent=2)
+print("Metrics log saved.")
 
 ppo_trainer.model.save_pretrained(SAVE_PATH)
 tokenizer.save_pretrained(SAVE_PATH)
