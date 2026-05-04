@@ -209,15 +209,14 @@ for step, sample in enumerate(dataset):
             gen_ids = ppo_trainer.generate(
                 [query_tensor],
                 max_new_tokens=MAX_NEW_TOKENS,
-                max_length=MAX_PROMPT_TOKENS + MAX_NEW_TOKENS,  # ← add this
+                return_prompt=False,        # ← TRL slices off the prompt for you
                 do_sample=True,
                 temperature=1.0,
                 pad_token_id=tokenizer.eos_token_id,
             )
-
-        response_tokens = safe_1d(
-            gen_ids[0][query_tensor.shape[0]:], "response"
-        )
+        
+        # gen_ids[0] is now ONLY the response tokens — no slicing needed
+        response_tokens = safe_1d(gen_ids[0], "response")
         response_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
 
         # ── Parse label and explanation from the response ─────────────────
