@@ -141,6 +141,10 @@ def parse_response(text: str) -> tuple[str, str]:
     if not explanation.strip():
         explanation = text.strip()
 
+    # Strip prompt leakage
+    for stop in ("Context:", "Question:", "Answer:", "<|"):
+        explanation = explanation.split(stop)[0].strip()
+
     return label, explanation
 
 
@@ -177,6 +181,7 @@ def flush_batch(step: int):
         query_tensors.clear()
         response_tensors.clear()
         rewards_list.clear()
+        torch.cuda.empty_cache() 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
