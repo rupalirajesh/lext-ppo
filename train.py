@@ -221,6 +221,7 @@ for step, sample in enumerate(dataset):
 
         # ── Parse label and explanation from the response ─────────────────
         label, explanation = parse_response(response_text)
+        print(f"Step {step:>3} | label={label} | explanation={explanation[:200]}")
 
         # ── Compute reward ────────────────────────────────────────────────
         if not response_text.strip():
