@@ -209,9 +209,9 @@ for step, sample in enumerate(dataset):
             gen_ids = ppo_trainer.generate(
                 [query_tensor],
                 max_new_tokens=MAX_NEW_TOKENS,
+                max_length=MAX_PROMPT_TOKENS + MAX_NEW_TOKENS,  # ← add this
                 do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
+                temperature=1.0,
                 pad_token_id=tokenizer.eos_token_id,
             )
 
