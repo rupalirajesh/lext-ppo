@@ -38,7 +38,7 @@ import lext as lext_module
 MODEL_NAME        = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 SAVE_PATH         = "/content/drive/MyDrive/tinyllama_ppo_finetuned"
 MAX_SAMPLES       = 500
-BATCH_SIZE        = 4
+BATCH_SIZE        = 2
 MAX_PROMPT_TOKENS = 384
 MAX_NEW_TOKENS    = 150
 LEARNING_RATE     = 1e-6
