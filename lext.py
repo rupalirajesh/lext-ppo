@@ -37,6 +37,9 @@ _model     = None   # AutoModelForCausalLMWithValueHead
 _tokenizer = None   # AutoTokenizer
 _device    = None   # torch.device
 
+_last_plausibility = 0.0
+_last_faithfulness = 0.0
+
 
 def init(model, tokenizer, device):
     """Call this once in train.py before computing any rewards."""
@@ -547,4 +550,9 @@ def lext(ground_context, ground_question, ground_explanation, ground_label,
 
     print(f"  Plausibility={plausibility:.3f}  Faithfulness={faithfulness:.3f}  LExT={score:.3f}")
     print("="*50 + "\n")
+
+    import lext as _self
+    _self._last_plausibility = plausibility
+    _self._last_faithfulness = faithfulness
+   
     return score
