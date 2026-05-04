@@ -124,7 +124,7 @@ def _bert_similarity(text1: str, text2: str) -> float:
     global _bert_tok, _bert_mdl
     if _bert_tok is None:
         _bert_tok = BertTokenizer.from_pretrained("bert-base-uncased")
-        _bert_mdl = BertModel.from_pretrained("bert-base-uncased").eval()
+        _bert_mdl = BertModel.from_pretrained("bert-base-uncased").eval().cpu()
 
     def embed(text):
         inputs = _bert_tok(text, return_tensors="pt", truncation=True, max_length=512)
