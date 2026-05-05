@@ -65,22 +65,32 @@ def _next_groq_key() -> str:
     return _groq_keys[_groq_index]
 
 
-def call_groq(prompt: str) -> str:
-    """Send a prompt to Llama-3.1-8b on Groq. Returns '' on failure."""
-    client = Groq(api_key=_next_groq_key())
-    try:
-        resp = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",   # was llama-3.1-8b-instant
-            timeout=30,
-        )
-        return resp.choices[0].message.content or ""
-    except Exception as e:
-        print(f"[Groq] Error: {e} — rotating key")
-        global _groq_index
-        _groq_index = (_groq_index + 1) % len(_groq_keys)
-        return ""
+import time
 
+def call_groq(prompt: str, retries: int = 3) -> str:
+    global _idx, _calls
+    if _calls > 0 and _calls % _ROTATE_EVERY == 0:
+        _idx = (_idx + 1) % len(_keys)
+    _calls += 1
+    for attempt in range(retries):
+        try:
+            resp = Groq(api_key=_keys[_idx]).chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                timeout=30,
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            if "rate_limit" in str(e).lower() or "429" in str(e):
+                wait = 60 * (attempt + 1)   # 60s, 120s, 180s
+                print(f"[Groq] Rate limit hit — waiting {wait}s before retry {attempt+1}/{retries}")
+                time.sleep(wait)
+                _idx = (_idx + 1) % len(_keys)   # also rotate key while waiting
+            else:
+                print(f"[Groq] Error: {e}")
+                return ""
+    print("[Groq] All retries exhausted — returning empty")
+    return ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LEXT-RAR REWARD  — single Groq call scores all 7 submetrics at once
