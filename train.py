@@ -276,6 +276,7 @@ print("Training complete.\n")
 # Save
 # ─────────────────────────────────────────────────────────────────────────────
 import json
+os.makedirs("/content/drive/MyDrive/tinyllama_ppo_finetuned", exist_ok=True)
 with open("/content/drive/MyDrive/tinyllama_ppo_finetuned/metrics_log.json", "w") as f:
     json.dump(metrics_log, f, indent=2)
 print("Metrics log saved.")
