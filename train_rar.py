@@ -50,7 +50,7 @@ REWARD_CENTRE     = 0.5   # shifts [0,1] reward to [-0.5, +0.5]
 _groq_keys    = [k.strip() for k in os.environ.get("GROQ_KEYS", "").split(",") if k.strip()]
 _groq_index   = 0
 _groq_calls   = 0
-_ROTATE_EVERY = 50
+_ROTATE_EVERY = 20 # changed from 50 cuz the model is now 70b
 
 if not _groq_keys:
     raise ValueError("Set GROQ_KEYS environment variable (comma-separated API keys).")
@@ -71,7 +71,7 @@ def call_groq(prompt: str) -> str:
     try:
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",   # was llama-3.1-8b-instant
             timeout=30,
         )
         return resp.choices[0].message.content or ""
