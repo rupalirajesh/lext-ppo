@@ -2,24 +2,22 @@
 train_rar.py — PPO fine-tuning of TinyLlama using LExT-RaR as the reward
 
 Run with:
-    GROQ_KEYS=key1,key2 python train_rar.py
+    GROQ_KEYS=key1,key2,...,key6 python train_rar.py
 
 Differences from the original train.py + lext.py
 ──────────────────────────────────────────────────
 - No BERT, no NER pipeline. All 7 submetrics scored in ONE Groq call.
-- reward function is lext_rar() defined right here in this file.
-- Model saved to a different path (tinyllama_ppo_lext_rar) so it never
-  collides with the original lext run.
+- Reward function lext_rar() is defined right here in this file.
+- Model saved to tinyllama_ppo_lext_rar (never collides with original run).
 - Scores logged to /content/drive/MyDrive/tinyllama_ppo_lext_rar/scores.csv
-  with columns: step, plausibility, faithfulness, lext_score, reward
-
-Everything else (PPO config, dataset, prompting, batch logic) is identical
-to the original so results are directly comparable.
+  columns: step, plausibility, faithfulness, lext_score, reward
+- Groq call includes retry logic with backoff so rate limits don't poison rewards.
 """
 
 import os
 import re
 import csv
+import time
 import torch
 from groq import Groq
 from transformers import AutoTokenizer
@@ -28,41 +26,54 @@ from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIG  ← only things you might want to change
+# CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
 MODEL_NAME        = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-SAVE_PATH         = "/content/drive/MyDrive/tinyllama_ppo_lext_rar"          # different from original
+SAVE_PATH         = "/content/drive/MyDrive/tinyllama_ppo_lext_rar"
 CSV_PATH          = "/content/drive/MyDrive/tinyllama_ppo_lext_rar/scores.csv"
 MAX_SAMPLES       = 500
 BATCH_SIZE        = 4
 MAX_PROMPT_TOKENS = 384
 MAX_NEW_TOKENS    = 150
 LEARNING_RATE     = 1e-6
-KL_COEF           = 0.2   # prevents reward hacking / mode collapse
-REWARD_CENTRE     = 0.5   # shifts [0,1] reward to [-0.5, +0.5]
+KL_COEF           = 0.2
+REWARD_CENTRE     = 0.5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GROQ  — key rotation every 50 calls
+# DRIVE CHECK — fail early if Drive isn't mounted
+# ─────────────────────────────────────────────────────────────────────────────
+
+if not os.path.exists("/content/drive/MyDrive"):
+    raise RuntimeError(
+        "Google Drive is not mounted. Run this first:\n"
+        "  from google.colab import drive\n"
+        "  drive.mount('/content/drive')"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GROQ — key rotation + retry with backoff
 # ─────────────────────────────────────────────────────────────────────────────
 
 _groq_keys    = [k.strip() for k in os.environ.get("GROQ_KEYS", "").split(",") if k.strip()]
 _groq_index   = 0
 _groq_calls   = 0
-_ROTATE_EVERY = 10 # changed from 50 cuz the model is now 70b
+_ROTATE_EVERY = 10   # rotate every 10 calls across 6 keys
 
 if not _groq_keys:
     raise ValueError("Set GROQ_KEYS environment variable (comma-separated API keys).")
 
 
-import time
-
 def call_groq(prompt: str, retries: int = 3) -> str:
+    """Call Groq with key rotation and rate-limit retry. Returns '' on failure."""
     global _groq_index, _groq_calls
-    if _groq_calls > 0 and _groq_calls % _ROTATE_EVERY == 0:
-        _groq_index = (_groq_index + 1) % len(_groq_keys)
     _groq_calls += 1
+    if _groq_calls % _ROTATE_EVERY == 0:
+        _groq_index = (_groq_index + 1) % len(_groq_keys)
+        print(f"[Groq] Rotated to key index {_groq_index}")
+
     for attempt in range(retries):
         try:
             resp = Groq(api_key=_groq_keys[_groq_index]).chat.completions.create(
@@ -72,19 +83,21 @@ def call_groq(prompt: str, retries: int = 3) -> str:
             )
             return resp.choices[0].message.content or ""
         except Exception as e:
-            if "rate_limit" in str(e).lower() or "429" in str(e):
+            if "429" in str(e):
                 wait = 60 * (attempt + 1)   # 60s, 120s, 180s
-                print(f"[Groq] Rate limit hit — waiting {wait}s before retry {attempt+1}/{retries}")
+                print(f"[Groq] Rate limit — waiting {wait}s (attempt {attempt+1}/{retries})")
                 time.sleep(wait)
-                _groq_index = (_groq_index + 1) % len(_groq_keys)   # also rotate key while waiting
+                _groq_index = (_groq_index + 1) % len(_groq_keys)
             else:
                 print(f"[Groq] Error: {e}")
                 return ""
+
     print("[Groq] All retries exhausted — returning empty")
     return ""
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# LEXT-RAR REWARD  — single Groq call scores all 7 submetrics at once
+# LEXT-RAR REWARD — single Groq call scores all 7 submetrics at once
 # ─────────────────────────────────────────────────────────────────────────────
 
 def lext_rar(
@@ -145,7 +158,6 @@ contextual: <score>"""
 
     raw = call_groq(prompt)
 
-    # Parse each score — default 0.0 if missing
     def parse(key: str) -> float:
         m = re.search(rf"{key}:\s*([0-9]*\.?[0-9]+)", raw, re.IGNORECASE)
         if m:
@@ -153,15 +165,14 @@ contextual: <score>"""
         print(f"  [lext_rar] could not parse '{key}' — defaulting to 0.0")
         return 0.0
 
-    wa   = parse("weighted_accuracy")
-    cr   = parse("context_relevancy")
-    is_  = parse("iterative_stability")
-    ps   = parse("paraphrase_stability")
-    qag  = parse("qag")
-    cf   = parse("counterfactual")
-    ctx  = parse("contextual")
+    wa  = parse("weighted_accuracy")
+    cr  = parse("context_relevancy")
+    is_ = parse("iterative_stability")
+    ps  = parse("paraphrase_stability")
+    qag = parse("qag")
+    cf  = parse("counterfactual")
+    ctx = parse("contextual")
 
-    # Aggregate
     correctness  = (wa + cr)        / 2.0
     consistency  = (is_ + ps)       / 2.0
     plausibility = (correctness + consistency) / 2.0
@@ -244,8 +255,8 @@ dataset = dataset.select(range(MAX_SAMPLES))
 def build_prompt(context: str, question: str) -> str:
     return tokenizer.apply_chat_template(
         [
-            {"role": "system",  "content": "You are a medical assistant. Answer yes/no questions about medical research."},
-            {"role": "user",    "content": f"Context: {context}\n\nQuestion: {question}\n\nAnswer with:\nAnswer: Yes or No\nReasoning: one sentence"},
+            {"role": "system", "content": "You are a medical assistant. Answer yes/no questions about medical research."},
+            {"role": "user",   "content": f"Context: {context}\n\nQuestion: {question}\n\nAnswer with:\nAnswer: Yes or No\nReasoning: one sentence"},
         ],
         tokenize=False,
         add_generation_prompt=True,
@@ -260,21 +271,18 @@ def parse_response(text: str) -> tuple[str, str]:
         line = line.strip()
         if line.lower().startswith("answer:"):
             raw = line.split(":", 1)[-1].strip().lower()
-            if "yes" in raw:   label = "Yes"
-            elif "no" in raw:  label = "No"
+            if "yes" in raw:  label = "Yes"
+            elif "no" in raw: label = "No"
         elif line.lower().startswith("reasoning:"):
             explanation = line.split(":", 1)[-1].strip()
 
-    # Fallback label scan
     if label == "unknown":
-        if "yes" in text.lower(): label = "Yes"
+        if "yes" in text.lower():  label = "Yes"
         elif "no" in text.lower(): label = "No"
 
-    # Fallback explanation
     if not explanation.strip():
         explanation = text.strip()
 
-    # Strip prompt leakage
     for stop in ("Context:", "Question:", "Answer:", "<|"):
         explanation = explanation.split(stop)[0].strip()
 
@@ -299,7 +307,7 @@ rewards_list     = []
 
 
 def flush_batch(step: int):
-    """Run one PPO update then clear the buffers (always clears, even on error)."""
+    """Run one PPO update then clear buffers (always clears, even on error)."""
     try:
         reward_tensors = [torch.tensor(r, dtype=torch.float32) for r in rewards_list]
         ppo_trainer.step(query_tensors, response_tensors, reward_tensors)
@@ -325,7 +333,6 @@ last_step = 0
 for step, sample in enumerate(dataset):
     last_step = step
     try:
-        # Skip ambiguous labels
         if sample["final_decision"].strip().lower() == "maybe":
             continue
 
@@ -333,12 +340,12 @@ for step, sample in enumerate(dataset):
         context  = " ".join(sample["context"]["contexts"])[:800].replace("\n", " ")
         prompt   = build_prompt(context, question)
 
-        # ── Tokenise prompt ───────────────────────────────────────────────
+        # ── Tokenise ──────────────────────────────────────────────────────
         enc = tokenizer(prompt, return_tensors="pt",
                         truncation=True, max_length=MAX_PROMPT_TOKENS)
         query_tensor = safe_1d(enc.input_ids[0].to(device), "query")
 
-        # ── Generate response (PPO rollout) ───────────────────────────────
+        # ── Generate (PPO rollout) ─────────────────────────────────────────
         with torch.no_grad():
             gen_ids = ppo_trainer.generate(
                 [query_tensor],
@@ -352,7 +359,7 @@ for step, sample in enumerate(dataset):
         response_tokens = safe_1d(gen_ids[0], "response")
         response_text   = tokenizer.decode(response_tokens, skip_special_tokens=True)
 
-        # ── Parse label + explanation ─────────────────────────────────────
+        # ── Parse ─────────────────────────────────────────────────────────
         label, explanation = parse_response(response_text)
         print(f"Step {step:>3} | label={label} | {explanation[:120]}")
 
@@ -360,7 +367,7 @@ for step, sample in enumerate(dataset):
             print(f"Step {step:>3} | ⚠ empty output — skipping")
             continue
 
-        # ── Score with LExT-RaR (one Groq call) ──────────────────────────
+        # ── Score ─────────────────────────────────────────────────────────
         lext_score, plausibility, faithfulness = lext_rar(
             ground_context=context,
             ground_question=question,
@@ -372,10 +379,10 @@ for step, sample in enumerate(dataset):
         reward = float(lext_score) - REWARD_CENTRE
         print(f"Step {step:>3} | lext={lext_score:.4f} | reward={reward:+.4f}")
 
-        # ── Log to CSV ────────────────────────────────────────────────────
+        # ── Log ───────────────────────────────────────────────────────────
         log_csv(CSV_PATH, step, plausibility, faithfulness, lext_score, reward)
 
-        # ── Accumulate into batch ─────────────────────────────────────────
+        # ── Accumulate ────────────────────────────────────────────────────
         query_tensors.append(query_tensor)
         response_tensors.append(response_tokens)
         rewards_list.append(reward)
@@ -387,7 +394,6 @@ for step, sample in enumerate(dataset):
         print(f"⚠ Error at step {step}: {e}")
         continue
 
-# Final update for any leftover samples
 if query_tensors:
     flush_batch(last_step)
 
