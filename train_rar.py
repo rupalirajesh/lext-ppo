@@ -106,7 +106,7 @@ def lext_rar(
     ground_explanation: str,
     predicted_label: str,
     predicted_explanation: str,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float] | None:
     """
     Score a model response with a single Groq rubric call.
 
@@ -157,6 +157,10 @@ counterfactual: <score>
 contextual: <score>"""
 
     raw = call_groq(prompt)
+
+    if not raw.strip():   # ← add this right after call_groq
+        print("  [lext_rar] empty response — skipping sample")
+        return None
 
     def parse(key: str) -> float:
         m = re.search(rf"{key}:\s*([0-9]*\.?[0-9]+)", raw, re.IGNORECASE)
@@ -368,13 +372,19 @@ for step, sample in enumerate(dataset):
             continue
 
         # ── Score ─────────────────────────────────────────────────────────
-        lext_score, plausibility, faithfulness = lext_rar(
+        result = lext_rar(
             ground_context=context,
             ground_question=question,
             ground_explanation=sample["long_answer"],
             predicted_label=label,
             predicted_explanation=explanation,
         )
+
+        if result is None:   # ← add this
+            print(f"Step {step:>3} | ⚠ Groq unavailable — skipping sample")
+            continue
+
+        lext_score, plausibility, faithfulness = result
 
         reward = float(lext_score) - REWARD_CENTRE
         print(f"Step {step:>3} | lext={lext_score:.4f} | reward={reward:+.4f}")
