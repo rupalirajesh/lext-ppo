@@ -50,7 +50,7 @@ REWARD_CENTRE     = 0.5   # shifts [0,1] reward to [-0.5, +0.5]
 _groq_keys    = [k.strip() for k in os.environ.get("GROQ_KEYS", "").split(",") if k.strip()]
 _groq_index   = 0
 _groq_calls   = 0
-_ROTATE_EVERY = 20 # changed from 50 cuz the model is now 70b
+_ROTATE_EVERY = 10 # changed from 50 cuz the model is now 70b
 
 if not _groq_keys:
     raise ValueError("Set GROQ_KEYS environment variable (comma-separated API keys).")
