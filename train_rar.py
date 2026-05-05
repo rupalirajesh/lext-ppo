@@ -66,7 +66,7 @@ if not _groq_keys:
     raise ValueError("Set GROQ_KEYS environment variable (comma-separated API keys).")
 
 
-def call_groq(prompt: str, retries: int = 3) -> str:
+def call_groq(prompt: str, retries: int = 6) -> str:
     """Call Groq with key rotation and rate-limit retry. Returns '' on failure."""
     global _groq_index, _groq_calls
     _groq_calls += 1
